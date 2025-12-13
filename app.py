@@ -5,7 +5,6 @@ from flask import Flask, request, jsonify
 from vosk import Model, KaldiRecognizer, SetLogLevel
 from pydub import AudioSegment
 from flask_cors import CORS
-from sbert_punc_case_ru import SbertPuncCase
 import urllib.request
 import zipfile
 
@@ -16,7 +15,7 @@ print("=" * 50)
 print("🚀 ИНИЦИАЛИЗАЦИЯ ПРИЛОЖЕНИЯ")
 print("=" * 50)
 
-# ===== ЗАГРУЗКА МОДЕЛЕЙ (один раз при старте) =====
+# ===== ЗАГРУЗКА МОДЕЛЕЙ =====
 
 def download_vosk_model():
     """Скачиваем Vosk модель для английского"""
@@ -24,7 +23,6 @@ def download_vosk_model():
     
     if not os.path.exists(model_path):
         print("\n⏳ Скачиваю Vosk модель для английского...")
-        print("   (это займет ~2-3 минуты, зависит от интернета)")
         
         model_url = "https://alphacephei.com/vosk/models/vosk-model-en-us-0.42.zip"
         zip_path = "/tmp/vosk_model.zip"
@@ -48,36 +46,73 @@ def download_vosk_model():
     
     return model_path
 
-def init_punc_model():
-    """Инициализируем модель для пунктуации"""
-    print("\n⏳ Загружаю модель пунктуации SbertPuncCase...")
+def init_recasepunc_model():
+    """Инициализируем recasepunc для пунктуации"""
+    print("\n⏳ Загружаю модель recasepunc для пунктуации...")
     try:
-        punc_model = SbertPuncCase()
-        print("✅ Модель пунктуации готова\n")
-        return punc_model
+        from recasepunc import RecasePunc
+        
+        # Используем предтренированную модель для английского
+        model = RecasePunc.load_from_checkpoint(
+            "checkpoint/checkpoint_en_transformer.pt"
+        )
+        print("✅ Модель recasepunc готова\n")
+        return model
     except Exception as e:
-        print(f"⚠️ Ошибка: {e}\n")
+        print(f"⚠️ Ошибка загрузки recasepunc: {e}")
+        print("   Буду использовать простую пунктуацию\n")
         return None
 
 # Загружаем при старте
 VOSK_MODEL_PATH = download_vosk_model()
-PUNC_MODEL = init_punc_model()
+RECASEPUNC_MODEL = init_recasepunc_model()
 
 print("=" * 50)
 print("✅ ПРИЛОЖЕНИЕ ГОТОВО К РАБОТЕ")
 print("=" * 50)
 
+# ===== ФУНКЦИИ ДЛЯ ПУНКТУАЦИИ =====
+
+def simple_punctuate(text):
+    """Простая капитализация + точка"""
+    if not text or not text.strip():
+        return text
+    
+    text = text.strip()
+    text = text[0].upper() + text[1:] if len(text) > 1 else text.upper()
+    
+    if text[-1] not in '.!?':
+        text += '.'
+    
+    return text
+
+def recasepunc_punctuate(text):
+    """Использует recasepunc для качественной пунктуации"""
+    if not text or not text.strip():
+        return text
+    
+    try:
+        if RECASEPUNC_MODEL is None:
+            return simple_punctuate(text)
+        
+        # recasepunc требует токены
+        from recasepunc import RecasePunc
+        
+        # Берем текст
+        camel_text = RECASEPUNC_MODEL.predict([text.lower()])
+        
+        return camel_text[0] if camel_text else simple_punctuate(text)
+    
+    except Exception as e:
+        print(f"   Ошибка в recasepunc: {e}, использую fallback")
+        return simple_punctuate(text)
+
 # ===== API ENDPOINT =====
 
 @app.route('/api', methods=['POST'])
 def process_audio():
-    """
-    Принимает аудио файл, конвертирует в текст, добавляет пунктуацию
-    
-    Ожидает файл с ключом '111' (как в твоем React Native коде)
-    """
+    """Распознает речь и добавляет пунктуацию"""
     try:
-        # Проверяем, есть ли файл
         if '111' not in request.files:
             return jsonify({"error": "No file provided"}), 400
         
@@ -95,13 +130,8 @@ def process_audio():
             audio_path = tmp.name
         
         try:
-            # Загружаем аудио
             song = AudioSegment.from_file(file)
-            
-            # Преобразуем в моно + 16kHz (требует Vosk)
             song = song.set_channels(1).set_frame_rate(16000)
-            
-            # Сохраняем временный файл
             song.export(audio_path, format="wav")
             print("   ✓ Готово")
         except Exception as e:
@@ -112,14 +142,12 @@ def process_audio():
         print("🎤 Распознаю речь...")
         
         try:
-            SetLogLevel(-1)  # Отключаем логи Vosk (много текста)
+            SetLogLevel(-1)
             
-            # Инициализируем модель
             model = Model(VOSK_MODEL_PATH)
             recognizer = KaldiRecognizer(model, 16000)
             recognizer.SetWords(True)
             
-            # Читаем аудио файл и распознаем
             with open(audio_path, "rb") as audio_file:
                 while True:
                     data = audio_file.read(4096)
@@ -127,16 +155,12 @@ def process_audio():
                         break
                     recognizer.AcceptWaveform(data)
             
-            # Получаем финальный результат
             result_json = recognizer.FinalResult()
             result_data = json.loads(result_json)
             
-            # Извлекаем текст
             if "result" in result_data and result_data["result"]:
-                # Если есть массив результатов (более точный)
-                text = " ".join([item["conf"] for item in result_data["result"] if "conf" in item])
+                text = " ".join([item.get("conf", "") for item in result_data["result"] if "conf" in item])
             else:
-                # Иначе берем "text" поле
                 text = result_data.get("text", "")
             
             if not text.strip():
@@ -149,28 +173,15 @@ def process_audio():
             print(f"   ❌ Ошибка: {str(e)}")
             return jsonify({"error": f"Speech recognition error: {str(e)}"}), 500
         finally:
-            # Удаляем временный файл
             if os.path.exists(audio_path):
                 os.unlink(audio_path)
         
-        # ===== ДОБАВЛЯЕМ ПУНКТУАЦИЮ И КАПИТАЛИЗАЦИЮ =====
-        print("✏️ Добавляю пунктуацию...")
+        # ===== ДОБАВЛЯЕМ ПУНКТУАЦИЮ =====
+        print("✏️ Добавляю пунктуацию (recasepunc)...")
+        final_text = recasepunc_punctuate(text)
+        print(f"   ✓ Готово")
+        print(f"✅ РЕЗУЛЬТАТ: {final_text}\n")
         
-        try:
-            if PUNC_MODEL:
-                final_text = PUNC_MODEL.punctuate(text)
-            else:
-                # Fallback: простая капитализация
-                final_text = text[0].upper() + text[1:] + '.' if text else text
-            
-            print(f"   ✓ Готово")
-            print(f"✅ РЕЗУЛЬТАТ: {final_text}\n")
-            
-        except Exception as e:
-            print(f"   ⚠️ Ошибка пунктуации: {e}")
-            final_text = text
-        
-        # ===== ВОЗВРАЩАЕМ РЕЗУЛЬТАТ =====
         return jsonify({
             "text": final_text,
             "raw_text": text
@@ -188,5 +199,3 @@ def health():
 if __name__ == '__main__':
     print("\n🌐 Запускаю Flask на http://0.0.0.0:5000")
     app.run(host='0.0.0.0', port=5000, debug=False)
-
-
