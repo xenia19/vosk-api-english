@@ -9,8 +9,6 @@ from flask import Flask, request, jsonify
 from vosk import Model, KaldiRecognizer, SetLogLevel
 from pydub import AudioSegment
 from flask_cors import CORS
-import urllib.request
-import zipfile
 import traceback
 
 app = Flask(__name__)
@@ -25,114 +23,48 @@ MODELS_LOADED = False
 LOAD_ERROR = None
 
 def download_vosk_model():
-    """Скачиваем Vosk модель для английского"""
+    """Модель уже загружена в Dockerfile, просто возвращаем путь"""
     model_path = "/tmp/vosk_model"
     
-    # Проверяем, уже ли загружена
     if os.path.exists(model_path) and os.path.isdir(model_path):
-        print("✅ Vosk модель уже загружена (из кэша)")
+        print("✅ Vosk модель найдена (загружена в Docker image)")
         return model_path
     
-    print("\n⏳ Скачиваю Vosk модель для английского...")
-    
-    # Используем МАЛЕНЬКУЮ модель (50MB вместо 150MB)
-    urls = [
-        "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
-        "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip"
-    ]
-    
-    for model_url in urls:
-        zip_path = "/tmp/vosk_model.zip"
-        
-        try:
-            print(f"   Попытка загрузить: {model_url.split('/')[-1]}")
-            
-            # Загружаем с User-Agent заголовком
-            request_obj = urllib.request.Request(model_url)
-            request_obj.add_header('User-Agent', 'Mozilla/5.0')
-            
-            # Скачиваем файл
-            with urllib.request.urlopen(request_obj, timeout=300) as response, open(zip_path, 'wb') as out_file:
-                shutil.copyfileobj(response, out_file)
-            
-            print("   ✓ Загружена")
-            
-            # Распаковываем
-            print("   Распаковываю...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall("/tmp/")
-            
-            print("   ✓ Распакована")
-            
-            # Находим папку модели
-            model_dirs = glob.glob("/tmp/vosk-model-*")
-            if model_dirs:
-                source_dir = model_dirs[0]
-                os.rename(source_dir, model_path)
-                
-                # Проверяем, что модель валидна
-                if os.path.exists(os.path.join(model_path, "conf")):
-                    print("   ✓ Модель валидна")
-                    
-                    # Удаляем zip файл
-                    if os.path.exists(zip_path):
-                        os.remove(zip_path)
-                    
-                    return model_path
-            
-            # Удаляем zip если что-то не так
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
-        
-        except urllib.error.URLError as e:
-            print(f"   ❌ URL ошибка: {str(e)[:100]}")
-            if os.path.exists(zip_path):
-                try:
-                    os.remove(zip_path)
-                except:
-                    pass
-            continue
-        
-        except Exception as e:
-            print(f"   ❌ Ошибка: {str(e)[:100]}")
-            if os.path.exists(zip_path):
-                try:
-                    os.remove(zip_path)
-                except:
-                    pass
-            continue
-    
-    # Если ничего не сработало
+    print(f"❌ Модель не найдена в {model_path}")
     return None
 
 def load_models_background():
-    """Загружаем модели в фоне"""
+    """Проверяем что модель готова (она уже скачана в Dockerfile)"""
     global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR
     
     try:
         print("\n" + "=" * 60)
-        print("⏱️  ЗАГРУЗКА МОДЕЛЕЙ В ФОНОВОМ ПОТОКЕ")
+        print("🔍 ПРОВЕРЯЮ VOSK МОДЕЛЬ")
         print("=" * 60)
         
         VOSK_MODEL_PATH = download_vosk_model()
         
         if VOSK_MODEL_PATH is None:
-            LOAD_ERROR = "Failed to download Vosk model from all sources"
-            print(f"\n❌ {LOAD_ERROR}")
-            MODELS_LOADED = False
-        else:
-            MODELS_LOADED = True
-            print("\n" + "=" * 60)
-            print("✅ МОДЕЛИ УСПЕШНО ЗАГРУЖЕНЫ")
-            print("=" * 60 + "\n")
+            raise Exception("Model not found - check Docker build logs")
+        
+        # Проверяем структуру модели
+        if not os.path.exists(os.path.join(VOSK_MODEL_PATH, "conf")):
+            raise Exception(f"Model structure invalid at {VOSK_MODEL_PATH}")
+        
+        print("✓ Структура модели валидна")
+        
+        MODELS_LOADED = True
+        print("\n" + "=" * 60)
+        print("✅ VOSK МОДЕЛЬ ГОТОВА К ИСПОЛЬЗОВАНИЮ")
+        print("=" * 60 + "\n")
     
     except Exception as e:
         LOAD_ERROR = str(e)
-        print(f"\n❌ Ошибка при загрузке: {LOAD_ERROR}\n")
+        print(f"\n❌ Ошибка: {LOAD_ERROR}\n")
         MODELS_LOADED = False
 
-# Запускаем загрузку моделей в отдельном потоке (не блокируем приложение!)
-print("⏳ Запускаю загрузку моделей в фоновом потоке...\n")
+# Запускаем проверку моделей в отдельном потоке
+print("⏳ Проверяю загруженные модели...\n")
 model_thread = threading.Thread(target=load_models_background, daemon=True)
 model_thread.start()
 
@@ -190,12 +122,12 @@ def process_audio():
     print(f"📊 MODEL_PATH={VOSK_MODEL_PATH}")
     
     if not MODELS_LOADED or VOSK_MODEL_PATH is None:
-        error_msg = LOAD_ERROR or "Models still loading..."
+        error_msg = LOAD_ERROR or "Models not loaded"
         print(f"❌ Модели не готовы: {error_msg}")
         print("=" * 60 + "\n")
         return jsonify({
             "error": error_msg,
-            "status": "models_loading"
+            "status": "models_not_ready"
         }), 503
     
     try:
@@ -230,7 +162,7 @@ def process_audio():
             print(f"   ⏳ Загружаю аудио из файла...")
             song = AudioSegment.from_file(file)
             original_duration = len(song)
-            print(f"   ✓ Загружено ({original_duration}ms, {len(song.get_array_of_samples())} samples)")
+            print(f"   ✓ Загружено ({original_duration}ms)")
             
             print(f"   🔧 Конвертирую в моно + 16kHz...")
             song = song.set_channels(1).set_frame_rate(16000)
