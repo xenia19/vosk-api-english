@@ -38,7 +38,3 @@ The API was created as a backend service for the **Voice Journal** mobile app.
 📱 **Voice Journal (Android app)**
 [https://play.google.com/store/apps/details?id=com.voicejournal](https://play.google.com/store/apps/details?id=com.voicejournal)
 
-
----
-
-Если хочешь, могу сделать **ещё более минималистичную версию (5–6 строк)** — идеально для тех, кто просто скроллит репозиторий.
