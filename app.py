@@ -1,10 +1,7 @@
 import os
 import json
 import tempfile
-import glob
 import threading
-import time
-import shutil
 from flask import Flask, request, jsonify
 from vosk import Model, KaldiRecognizer, SetLogLevel
 from pydub import AudioSegment
@@ -22,19 +19,8 @@ VOSK_MODEL_PATH = None
 MODELS_LOADED = False
 LOAD_ERROR = None
 
-def download_vosk_model():
-    """Модель уже загружена в Dockerfile, просто возвращаем путь"""
-    model_path = "/tmp/vosk_model"
-    
-    if os.path.exists(model_path) and os.path.isdir(model_path):
-        print("✅ Vosk модель найдена (загружена в Docker image)")
-        return model_path
-    
-    print(f"❌ Модель не найдена в {model_path}")
-    return None
-
 def load_models_background():
-    """Проверяем что модель готова (она уже скачана в Dockerfile)"""
+    """Проверяем что модель уже есть в /tmp (из Docker build)"""
     global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR
     
     try:
@@ -42,25 +28,33 @@ def load_models_background():
         print("🔍 ПРОВЕРЯЮ VOSK МОДЕЛЬ")
         print("=" * 60)
         
-        VOSK_MODEL_PATH = download_vosk_model()
+        model_path = "/tmp/vosk_model"
         
-        if VOSK_MODEL_PATH is None:
-            raise Exception("Model not found - check Docker build logs")
+        # Проверяем что модель существует (она была скачана при Docker build)
+        if not os.path.exists(model_path):
+            raise Exception(f"Model directory not found at {model_path}")
         
-        # Проверяем структуру модели
-        if not os.path.exists(os.path.join(VOSK_MODEL_PATH, "conf")):
-            raise Exception(f"Model structure invalid at {VOSK_MODEL_PATH}")
+        print(f"✓ Модель найдена в {model_path}")
+        
+        # Проверяем структуру
+        if not os.path.isdir(model_path):
+            raise Exception(f"{model_path} is not a directory")
+        
+        if not os.path.exists(os.path.join(model_path, "conf")):
+            raise Exception(f"Model structure invalid - no 'conf' directory")
         
         print("✓ Структура модели валидна")
         
+        VOSK_MODEL_PATH = model_path
         MODELS_LOADED = True
+        
         print("\n" + "=" * 60)
         print("✅ VOSK МОДЕЛЬ ГОТОВА К ИСПОЛЬЗОВАНИЮ")
         print("=" * 60 + "\n")
     
     except Exception as e:
         LOAD_ERROR = str(e)
-        print(f"\n❌ Ошибка: {LOAD_ERROR}\n")
+        print(f"\n❌ ОШИБКА: {LOAD_ERROR}\n")
         MODELS_LOADED = False
 
 # Запускаем проверку моделей в отдельном потоке
@@ -75,11 +69,9 @@ def simple_punctuate(text):
     
     text = text.strip()
     
-    # Капитализируем первое слово
     if len(text) > 0:
         text = text[0].upper() + text[1:]
     
-    # Добавляем точку если её нет
     if text and text[-1] not in '.!?,;:':
         text += '.'
     
@@ -117,9 +109,7 @@ def process_audio():
     print("🔵 ПОЛУЧЕН ЗАПРОС /api")
     print("=" * 60)
     
-    # Проверяем, загружены ли модели
     print(f"📊 Статус моделей: MODELS_LOADED={MODELS_LOADED}")
-    print(f"📊 MODEL_PATH={VOSK_MODEL_PATH}")
     
     if not MODELS_LOADED or VOSK_MODEL_PATH is None:
         error_msg = LOAD_ERROR or "Models not loaded"
@@ -131,7 +121,6 @@ def process_audio():
         }), 503
     
     try:
-        # Проверяем файл
         print("📥 Проверяю наличие файла...")
         if '111' not in request.files:
             print("❌ Ошибка: нет файла в поле '111'")
@@ -147,7 +136,7 @@ def process_audio():
             return jsonify({"error": "Empty filename"}), 400
         
         file_size = len(file.read())
-        file.seek(0)  # Возвращаемся в начало файла
+        file.seek(0)
         print(f"📥 Получен файл: {file.filename} ({file_size} bytes)")
         
         # ===== КОНВЕРТИРУЕМ В WAV =====
@@ -157,9 +146,7 @@ def process_audio():
             audio_path = tmp.name
         
         try:
-            print(f"   📂 Временный файл: {audio_path}")
-            
-            print(f"   ⏳ Загружаю аудио из файла...")
+            print(f"   ⏳ Загружаю аудио...")
             song = AudioSegment.from_file(file)
             original_duration = len(song)
             print(f"   ✓ Загружено ({original_duration}ms)")
@@ -172,7 +159,6 @@ def process_audio():
             song.export(audio_path, format="wav")
             print(f"   ✓ Экспортировано")
             
-            # Проверяем что файл создан
             if not os.path.exists(audio_path):
                 raise Exception(f"WAV file not created at {audio_path}")
             
@@ -180,9 +166,7 @@ def process_audio():
             print(f"   ✓ Файл существует ({file_stat.st_size} bytes)")
             
         except Exception as e:
-            print(f"   ❌ ОШИБКА КОНВЕРТАЦИИ:")
-            print(f"      Type: {type(e).__name__}")
-            print(f"      Message: {str(e)}")
+            print(f"   ❌ ОШИБКА КОНВЕРТАЦИИ: {str(e)}")
             traceback.print_exc()
             print("=" * 60 + "\n")
             return jsonify({"error": f"Audio conversion failed: {str(e)}"}), 400
@@ -221,29 +205,24 @@ def process_audio():
             result_json = recognizer.FinalResult()
             print(f"   ✓ JSON получен")
             
-            print(f"   📊 Парсирую результат...")
             result_data = json.loads(result_json)
-            print(f"   ✓ Распарсено")
             
-            # Извлекаем текст
             if "result" in result_data and result_data["result"]:
                 text = " ".join([item.get("conf", "") for item in result_data["result"] if "conf" in item])
             else:
                 text = result_data.get("text", "")
             
-            print(f"   📝 Извлеченный текст: '{text}'")
+            print(f"   📝 Текст: '{text}'")
             
             if not text or not text.strip():
-                print("   ⚠️ Речь не распознана (пустой результат)")
+                print("   ⚠️ Речь не распознана")
                 print("=" * 60 + "\n")
                 return jsonify({"error": "No speech detected in audio"}), 400
             
-            print(f"   ✓ Распознано: '{text}'")
+            print(f"   ✓ Распознано")
             
         except Exception as e:
-            print(f"   ❌ ОШИБКА STT:")
-            print(f"      Type: {type(e).__name__}")
-            print(f"      Message: {str(e)}")
+            print(f"   ❌ ОШИБКА STT: {str(e)}")
             traceback.print_exc()
             print("=" * 60 + "\n")
             return jsonify({"error": f"Speech recognition error: {str(e)}"}), 500
@@ -254,14 +233,14 @@ def process_audio():
                     os.unlink(audio_path)
                     print(f"   ✓ Файл удален")
                 except Exception as e:
-                    print(f"   ⚠️ Не удалось удалить файл: {e}")
+                    print(f"   ⚠️ Не удалось удалить: {e}")
         
         # ===== ДОБАВЛЯЕМ ПУНКТУАЦИЮ =====
         print("✏️  Добавляю пунктуацию...")
         try:
             final_text = simple_punctuate(text)
             print(f"   ✓ Пунктуация добавлена")
-            print(f"✅ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ: '{final_text}'")
+            print(f"✅ РЕЗУЛЬТАТ: '{final_text}'")
         except Exception as e:
             print(f"   ❌ Ошибка пунктуации: {e}")
             final_text = text
@@ -275,10 +254,7 @@ def process_audio():
         }), 200
     
     except Exception as e:
-        print(f"❌ КРИТИЧНАЯ ОШИБКА В MAIN HANDLER:")
-        print(f"   Type: {type(e).__name__}")
-        print(f"   Message: {str(e)}")
-        print("   Stack trace:")
+        print(f"❌ КРИТИЧНАЯ ОШИБКА: {str(e)}")
         traceback.print_exc()
         print("=" * 60 + "\n")
         return jsonify({"error": f"Processing error: {str(e)}"}), 500
