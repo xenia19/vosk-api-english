@@ -11,6 +11,7 @@ from pydub import AudioSegment
 from flask_cors import CORS
 import urllib.request
 import zipfile
+import traceback
 
 app = Flask(__name__)
 CORS(app, resources={r'/*': {'origins': '*'}})
@@ -180,69 +181,117 @@ def health():
 def process_audio():
     """Распознает речь и добавляет пунктуацию"""
     
+    print("\n" + "=" * 60)
+    print("🔵 ПОЛУЧЕН ЗАПРОС /api")
+    print("=" * 60)
+    
     # Проверяем, загружены ли модели
+    print(f"📊 Статус моделей: MODELS_LOADED={MODELS_LOADED}")
+    print(f"📊 MODEL_PATH={VOSK_MODEL_PATH}")
+    
     if not MODELS_LOADED or VOSK_MODEL_PATH is None:
         error_msg = LOAD_ERROR or "Models still loading..."
-        print(f"\n❌ Запрос получен, но модели не готовы: {error_msg}")
+        print(f"❌ Модели не готовы: {error_msg}")
+        print("=" * 60 + "\n")
         return jsonify({
             "error": error_msg,
-            "status": "models_loading",
-            "retry_after_seconds": 30
+            "status": "models_loading"
         }), 503
     
     try:
         # Проверяем файл
+        print("📥 Проверяю наличие файла...")
         if '111' not in request.files:
-            print("\n❌ Ошибка: нет файла в поле '111'")
+            print("❌ Ошибка: нет файла в поле '111'")
+            print("=" * 60 + "\n")
             return jsonify({"error": "No file provided (expected key: '111')"}), 400
         
         file = request.files['111']
+        print(f"✓ Файл найден: {file.filename}")
         
         if file.filename == '':
-            print("\n❌ Ошибка: пустое имя файла")
+            print("❌ Ошибка: пустое имя файла")
+            print("=" * 60 + "\n")
             return jsonify({"error": "Empty filename"}), 400
         
-        print(f"\n📥 Получен файл: {file.filename} ({file.content_length} bytes)")
+        file_size = len(file.read())
+        file.seek(0)  # Возвращаемся в начало файла
+        print(f"📥 Получен файл: {file.filename} ({file_size} bytes)")
         
         # ===== КОНВЕРТИРУЕМ В WAV =====
-        print("🔄 Конвертирую в WAV 16kHz...")
+        print("🔄 Начинаю конвертацию в WAV 16kHz...")
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
             audio_path = tmp.name
         
         try:
+            print(f"   📂 Временный файл: {audio_path}")
+            
+            print(f"   ⏳ Загружаю аудио из файла...")
             song = AudioSegment.from_file(file)
-            original_length = len(song)
+            original_duration = len(song)
+            print(f"   ✓ Загружено ({original_duration}ms, {len(song.get_array_of_samples())} samples)")
             
+            print(f"   🔧 Конвертирую в моно + 16kHz...")
             song = song.set_channels(1).set_frame_rate(16000)
-            song.export(audio_path, format="wav")
+            print(f"   ✓ Конвертировано ({len(song)}ms)")
             
-            print(f"   ✓ Конвертировано ({original_length}ms)")
+            print(f"   💾 Экспортирую в WAV...")
+            song.export(audio_path, format="wav")
+            print(f"   ✓ Экспортировано")
+            
+            # Проверяем что файл создан
+            if not os.path.exists(audio_path):
+                raise Exception(f"WAV file not created at {audio_path}")
+            
+            file_stat = os.stat(audio_path)
+            print(f"   ✓ Файл существует ({file_stat.st_size} bytes)")
+            
         except Exception as e:
-            print(f"   ❌ Ошибка конвертации: {str(e)}")
+            print(f"   ❌ ОШИБКА КОНВЕРТАЦИИ:")
+            print(f"      Type: {type(e).__name__}")
+            print(f"      Message: {str(e)}")
+            traceback.print_exc()
+            print("=" * 60 + "\n")
             return jsonify({"error": f"Audio conversion failed: {str(e)}"}), 400
         
         # ===== РАСПОЗНАВАНИЕ РЕЧИ (VOSK) =====
-        print("🎤 Распознаю речь...")
+        print("🎤 Начинаю распознавание речи...")
         
         try:
-            SetLogLevel(-1)  # Отключаем логи Vosk
+            print(f"   ✓ Проверяю модель...")
+            if not os.path.exists(VOSK_MODEL_PATH):
+                raise Exception(f"Model path not found: {VOSK_MODEL_PATH}")
+            print(f"   ✓ Путь к модели существует")
             
+            print(f"   ⏳ Инициализирую Vosk...")
+            SetLogLevel(-1)
             model = Model(VOSK_MODEL_PATH)
+            print(f"   ✓ Модель загружена")
+            
+            print(f"   ⏳ Создаю KaldiRecognizer...")
             recognizer = KaldiRecognizer(model, 16000)
             recognizer.SetWords(True)
+            print(f"   ✓ Recognizer готов")
             
-            # Читаем аудио и распознаем
+            print(f"   ⏳ Читаю WAV файл...")
+            bytes_read = 0
             with open(audio_path, "rb") as audio_file:
                 while True:
                     data = audio_file.read(4096)
                     if not data:
                         break
                     recognizer.AcceptWaveform(data)
+                    bytes_read += len(data)
+            print(f"   ✓ Прочитано {bytes_read} байт")
             
-            # Получаем финальный результат
+            print(f"   ⏳ Получаю финальный результат...")
             result_json = recognizer.FinalResult()
+            print(f"   ✓ JSON получен")
+            
+            print(f"   📊 Парсирую результат...")
             result_data = json.loads(result_json)
+            print(f"   ✓ Распарсено")
             
             # Извлекаем текст
             if "result" in result_data and result_data["result"]:
@@ -250,27 +299,42 @@ def process_audio():
             else:
                 text = result_data.get("text", "")
             
+            print(f"   📝 Извлеченный текст: '{text}'")
+            
             if not text or not text.strip():
                 print("   ⚠️ Речь не распознана (пустой результат)")
+                print("=" * 60 + "\n")
                 return jsonify({"error": "No speech detected in audio"}), 400
             
             print(f"   ✓ Распознано: '{text}'")
             
         except Exception as e:
-            print(f"   ❌ Ошибка STT: {str(e)}")
+            print(f"   ❌ ОШИБКА STT:")
+            print(f"      Type: {type(e).__name__}")
+            print(f"      Message: {str(e)}")
+            traceback.print_exc()
+            print("=" * 60 + "\n")
             return jsonify({"error": f"Speech recognition error: {str(e)}"}), 500
         finally:
-            # Удаляем временный файл
+            print(f"   🧹 Удаляю временный файл...")
             if os.path.exists(audio_path):
                 try:
                     os.unlink(audio_path)
-                except:
-                    pass
+                    print(f"   ✓ Файл удален")
+                except Exception as e:
+                    print(f"   ⚠️ Не удалось удалить файл: {e}")
         
         # ===== ДОБАВЛЯЕМ ПУНКТУАЦИЮ =====
         print("✏️  Добавляю пунктуацию...")
-        final_text = simple_punctuate(text)
-        print(f"✅ РЕЗУЛЬТАТ: '{final_text}'\n")
+        try:
+            final_text = simple_punctuate(text)
+            print(f"   ✓ Пунктуация добавлена")
+            print(f"✅ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ: '{final_text}'")
+        except Exception as e:
+            print(f"   ❌ Ошибка пунктуации: {e}")
+            final_text = text
+        
+        print("=" * 60 + "\n")
         
         return jsonify({
             "text": final_text,
@@ -279,7 +343,12 @@ def process_audio():
         }), 200
     
     except Exception as e:
-        print(f"❌ КРИТИЧНАЯ ОШИБКА: {str(e)}\n")
+        print(f"❌ КРИТИЧНАЯ ОШИБКА В MAIN HANDLER:")
+        print(f"   Type: {type(e).__name__}")
+        print(f"   Message: {str(e)}")
+        print("   Stack trace:")
+        traceback.print_exc()
+        print("=" * 60 + "\n")
         return jsonify({"error": f"Processing error: {str(e)}"}), 500
 
 @app.errorhandler(404)
@@ -288,6 +357,8 @@ def not_found(error):
 
 @app.errorhandler(500)
 def server_error(error):
+    print(f"❌ UNHANDLED ERROR: {error}")
+    traceback.print_exc()
     return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == '__main__':
@@ -295,6 +366,7 @@ if __name__ == '__main__':
     print("🌐 ЗАПУСКАЮ FLASK")
     print("=" * 60)
     print("📡 Слушаю на http://0.0.0.0:5000")
+    print("🔗 Главная: GET /")
     print("🔗 Здоровье: GET /health")
     print("📤 API: POST /api")
     print("=" * 60 + "\n")
