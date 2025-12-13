@@ -18,10 +18,11 @@ print("=" * 60)
 VOSK_MODEL_PATH = None
 MODELS_LOADED = False
 LOAD_ERROR = None
+RECASEPUNC_MODEL = None
 
 def load_models_background():
-    """Проверяем что модель уже есть в /tmp (из Docker build)"""
-    global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR
+    """Проверяем Vosk модель и загружаем recasepunc"""
+    global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR, RECASEPUNC_MODEL
     
     try:
         print("\n" + "=" * 60)
@@ -30,26 +31,44 @@ def load_models_background():
         
         model_path = "/tmp/vosk_model"
         
-        # Проверяем что модель существует (она была скачана при Docker build)
+        # Проверяем что модель Vosk существует
         if not os.path.exists(model_path):
             raise Exception(f"Model directory not found at {model_path}")
         
-        print(f"✓ Модель найдена в {model_path}")
+        print(f"✓ Vosk модель найдена в {model_path}")
         
-        # Проверяем структуру
         if not os.path.isdir(model_path):
             raise Exception(f"{model_path} is not a directory")
         
         if not os.path.exists(os.path.join(model_path, "conf")):
             raise Exception(f"Model structure invalid - no 'conf' directory")
         
-        print("✓ Структура модели валидна")
+        print("✓ Структура Vosk модели валидна")
         
         VOSK_MODEL_PATH = model_path
+        
+        # ===== ЗАГРУЖАЕМ RECASEPUNC =====
+        print("\n" + "=" * 60)
+        print("📚 ЗАГРУЖАЮ RECASEPUNC МОДЕЛЬ")
+        print("=" * 60)
+        
+        try:
+            from recasepunc import RecasePunc
+            
+            print("⏳ Инициализирую RecasePunc...")
+            RECASEPUNC_MODEL = RecasePunc.load_from_checkpoint(
+                "checkpoint/checkpoint_en_transformer.pt"
+            )
+            print("✓ RecasePunc модель загружена")
+        except Exception as e:
+            print(f"⚠️ Не удалось загрузить RecasePunc: {e}")
+            print("   Буду использовать простую пунктуацию")
+            RECASEPUNC_MODEL = None
+        
         MODELS_LOADED = True
         
         print("\n" + "=" * 60)
-        print("✅ VOSK МОДЕЛЬ ГОТОВА К ИСПОЛЬЗОВАНИЮ")
+        print("✅ ВСЕ МОДЕЛИ ГОТОВЫ К ИСПОЛЬЗОВАНИЮ")
         print("=" * 60 + "\n")
     
     except Exception as e:
@@ -63,7 +82,7 @@ model_thread = threading.Thread(target=load_models_background, daemon=True)
 model_thread.start()
 
 def simple_punctuate(text):
-    """Добавляет заглавную букву и точку"""
+    """Простая капитализация + точка (fallback)"""
     if not text or not text.strip():
         return text
     
@@ -77,11 +96,33 @@ def simple_punctuate(text):
     
     return text
 
+def recasepunc_punctuate(text):
+    """Используем recasepunc для качественной пунктуации"""
+    if not text or not text.strip():
+        return text
+    
+    try:
+        if RECASEPUNC_MODEL is None:
+            print("   ⚠️ RecasePunc не загружена, использую простую пунктуацию")
+            return simple_punctuate(text)
+        
+        # Применяем пунктуацию
+        result = RECASEPUNC_MODEL.predict([text.lower()])
+        
+        if result and len(result) > 0:
+            return result[0]
+        else:
+            return simple_punctuate(text)
+    
+    except Exception as e:
+        print(f"   ⚠️ Ошибка recasepunc: {e}")
+        return simple_punctuate(text)
+
 @app.route('/', methods=['GET'])
 def index():
     """Главная страница"""
     return jsonify({
-        "name": "Vosk API - English Speech to Text",
+        "name": "Vosk API - English Speech to Text with RecasePunc",
         "version": "1.0",
         "status": "running",
         "models_loaded": MODELS_LOADED,
@@ -98,7 +139,9 @@ def health():
         "status": "ok",
         "app_running": True,
         "models_loaded": MODELS_LOADED,
-        "load_error": LOAD_ERROR
+        "load_error": LOAD_ERROR,
+        "vosk_ready": VOSK_MODEL_PATH is not None,
+        "recasepunc_ready": RECASEPUNC_MODEL is not None
     }), 200
 
 @app.route('/api', methods=['POST'])
@@ -110,6 +153,7 @@ def process_audio():
     print("=" * 60)
     
     print(f"📊 Статус моделей: MODELS_LOADED={MODELS_LOADED}")
+    print(f"📊 Vosk: {VOSK_MODEL_PATH is not None}, RecasePunc: {RECASEPUNC_MODEL is not None}")
     
     if not MODELS_LOADED or VOSK_MODEL_PATH is None:
         error_msg = LOAD_ERROR or "Models not loaded"
@@ -212,7 +256,7 @@ def process_audio():
             else:
                 text = result_data.get("text", "")
             
-            print(f"   📝 Текст: '{text}'")
+            print(f"   📝 Распознанный текст: '{text}'")
             
             if not text or not text.strip():
                 print("   ⚠️ Речь не распознана")
@@ -236,11 +280,11 @@ def process_audio():
                     print(f"   ⚠️ Не удалось удалить: {e}")
         
         # ===== ДОБАВЛЯЕМ ПУНКТУАЦИЮ =====
-        print("✏️  Добавляю пунктуацию...")
+        print("✏️  Добавляю пунктуацию с RecasePunc...")
         try:
-            final_text = simple_punctuate(text)
+            final_text = recasepunc_punctuate(text)
             print(f"   ✓ Пунктуация добавлена")
-            print(f"✅ РЕЗУЛЬТАТ: '{final_text}'")
+            print(f"✅ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ: '{final_text}'")
         except Exception as e:
             print(f"   ❌ Ошибка пунктуации: {e}")
             final_text = text
