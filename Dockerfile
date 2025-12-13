@@ -2,12 +2,13 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Устанавливаем системные зависимости (включая wget и unzip!)
+# Устанавливаем системные зависимости (включая git!)
 RUN apt-get update && \
     apt-get install -y \
     ffmpeg \
     wget \
-    unzip && \
+    unzip \
+    git && \
     rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements
