@@ -2,9 +2,12 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Устанавливаем системные зависимости
+# Устанавливаем системные зависимости (включая wget и unzip!)
 RUN apt-get update && \
-    apt-get install -y ffmpeg git wget unzip && \
+    apt-get install -y \
+    ffmpeg \
+    wget \
+    unzip && \
     rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements
@@ -13,16 +16,17 @@ COPY requirements.txt .
 # Устанавливаем зависимости Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ===== СКАЧИВАЕМ VOSK МОДЕЛЬ ПРИ BUILD'Е =====
+# ===== СКАЧИВАЕМ И РАСПАКОВЫВАЕМ VOSK МОДЕЛЬ =====
 RUN echo "⏳ Скачиваю Vosk модель..." && \
     mkdir -p /tmp && \
     cd /tmp && \
-    wget -q https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && \
+    wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && \
     echo "✓ Распаковываю..." && \
     unzip -q vosk-model-small-en-us-0.15.zip && \
     mv vosk-model-small-en-us-0.15 vosk_model && \
     rm vosk-model-small-en-us-0.15.zip && \
-    echo "✓ Модель готова!"
+    echo "✓ Модель готова!" && \
+    ls -la /tmp/vosk_model/
 
 # Копируем приложение
 COPY app.py .
