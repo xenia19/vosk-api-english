@@ -21,7 +21,7 @@ LOAD_ERROR = None
 RECASEPUNC_MODEL = None
 
 def load_models_background():
-    """Проверяем Vosk модель и загружаем recasepunc"""
+    """Проверяем Vosk модель"""
     global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR, RECASEPUNC_MODEL
     
     try:
@@ -31,7 +31,6 @@ def load_models_background():
         
         model_path = "/app/vosk_model"
         
-        # Проверяем что модель Vosk существует
         if not os.path.exists(model_path):
             raise Exception(f"Model directory not found at {model_path}")
         
@@ -47,23 +46,11 @@ def load_models_background():
         
         VOSK_MODEL_PATH = model_path
         
-        # ===== ЗАГРУЖАЕМ RECASEPUNC =====
+        # ===== ПРОПУСКАЕМ RECASEPUNC (несовместим) =====
         print("\n" + "=" * 60)
-        print("📚 ЗАГРУЖАЮ RECASEPUNC МОДЕЛЬ")
+        print("⏭️  RecasePunc отключен (используется simple_punctuate)")
         print("=" * 60)
-        
-        try:
-            from recasepunc import RecasePunc
-            
-            print("⏳ Инициализирую RecasePunc...")
-            RECASEPUNC_MODEL = RecasePunc.load_from_checkpoint(
-                "checkpoint/checkpoint_en_transformer.pt"
-            )
-            print("✓ RecasePunc модель загружена")
-        except Exception as e:
-            print(f"⚠️ Не удалось загрузить RecasePunc: {e}")
-            print("   Буду использовать простую пунктуацию")
-            RECASEPUNC_MODEL = None
+        RECASEPUNC_MODEL = None
         
         MODELS_LOADED = True
         
