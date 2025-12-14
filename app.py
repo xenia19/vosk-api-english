@@ -18,11 +18,10 @@ print("=" * 60)
 VOSK_MODEL_PATH = None
 MODELS_LOADED = False
 LOAD_ERROR = None
-RECASEPUNC_MODEL = None
 
 def load_models_background():
     """Проверяем Vosk модель"""
-    global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR, RECASEPUNC_MODEL
+    global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR
     
     try:
         print("\n" + "=" * 60)
@@ -31,6 +30,7 @@ def load_models_background():
         
         model_path = "/app/vosk_model"
         
+        # Проверяем что модель Vosk существует
         if not os.path.exists(model_path):
             raise Exception(f"Model directory not found at {model_path}")
         
@@ -46,16 +46,10 @@ def load_models_background():
         
         VOSK_MODEL_PATH = model_path
         
-        # ===== ПРОПУСКАЕМ RECASEPUNC (несовместим) =====
-        print("\n" + "=" * 60)
-        print("⏭️  RecasePunc отключен (используется simple_punctuate)")
-        print("=" * 60)
-        RECASEPUNC_MODEL = None
-        
         MODELS_LOADED = True
         
         print("\n" + "=" * 60)
-        print("✅ ВСЕ МОДЕЛИ ГОТОВЫ К ИСПОЛЬЗОВАНИЮ")
+        print("✅ VOSK МОДЕЛЬ ГОТОВА К ИСПОЛЬЗОВАНИЮ")
         print("=" * 60 + "\n")
     
     except Exception as e:
@@ -69,7 +63,7 @@ model_thread = threading.Thread(target=load_models_background, daemon=True)
 model_thread.start()
 
 def simple_punctuate(text):
-    """Простая капитализация + точка (fallback)"""
+    """Простая капитализация + точка"""
     if not text or not text.strip():
         return text
     
@@ -83,33 +77,11 @@ def simple_punctuate(text):
     
     return text
 
-def recasepunc_punctuate(text):
-    """Используем recasepunc для качественной пунктуации"""
-    if not text or not text.strip():
-        return text
-    
-    try:
-        if RECASEPUNC_MODEL is None:
-            print("   ⚠️ RecasePunc не загружена, использую простую пунктуацию")
-            return simple_punctuate(text)
-        
-        # Применяем пунктуацию
-        result = RECASEPUNC_MODEL.predict([text.lower()])
-        
-        if result and len(result) > 0:
-            return result[0]
-        else:
-            return simple_punctuate(text)
-    
-    except Exception as e:
-        print(f"   ⚠️ Ошибка recasepunc: {e}")
-        return simple_punctuate(text)
-
 @app.route('/', methods=['GET'])
 def index():
     """Главная страница"""
     return jsonify({
-        "name": "Vosk API - English Speech to Text with RecasePunc",
+        "name": "Vosk API - English Speech to Text",
         "version": "1.0",
         "status": "running",
         "models_loaded": MODELS_LOADED,
@@ -127,8 +99,7 @@ def health():
         "app_running": True,
         "models_loaded": MODELS_LOADED,
         "load_error": LOAD_ERROR,
-        "vosk_ready": VOSK_MODEL_PATH is not None,
-        "recasepunc_ready": RECASEPUNC_MODEL is not None
+        "vosk_ready": VOSK_MODEL_PATH is not None
     }), 200
 
 @app.route('/api', methods=['POST'])
@@ -140,7 +111,7 @@ def process_audio():
     print("=" * 60)
     
     print(f"📊 Статус моделей: MODELS_LOADED={MODELS_LOADED}")
-    print(f"📊 Vosk: {VOSK_MODEL_PATH is not None}, RecasePunc: {RECASEPUNC_MODEL is not None}")
+    print(f"📊 Vosk: {VOSK_MODEL_PATH is not None}")
     
     if not MODELS_LOADED or VOSK_MODEL_PATH is None:
         error_msg = LOAD_ERROR or "Models not loaded"
@@ -237,9 +208,11 @@ def process_audio():
             print(f"   ✓ JSON получен")
             
             result_data = json.loads(result_json)
+            print(f"   📋 Raw JSON: {result_data}")
             
+            # ИСПРАВЛЕННОЕ ПАРСИНГ РЕЗУЛЬТАТА
             if "result" in result_data and result_data["result"]:
-                text = " ".join([item.get("conf", "") for item in result_data["result"] if "conf" in item])
+                text = " ".join([item.get("result", "") for item in result_data["result"]])
             else:
                 text = result_data.get("text", "")
             
@@ -267,9 +240,9 @@ def process_audio():
                     print(f"   ⚠️ Не удалось удалить: {e}")
         
         # ===== ДОБАВЛЯЕМ ПУНКТУАЦИЮ =====
-        print("✏️  Добавляю пунктуацию с RecasePunc...")
+        print("✏️  Добавляю пунктуацию...")
         try:
-            final_text = recasepunc_punctuate(text)
+            final_text = simple_punctuate(text)
             print(f"   ✓ Пунктуация добавлена")
             print(f"✅ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ: '{final_text}'")
         except Exception as e:
