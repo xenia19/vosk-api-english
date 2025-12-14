@@ -18,16 +18,18 @@ print("=" * 60)
 VOSK_MODEL_PATH = None
 MODELS_LOADED = False
 LOAD_ERROR = None
+PUNCTUATOR = None
 
 def load_models_background():
-    """Проверяем Vosk модель"""
-    global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR
+    """Загружаем Vosk модель и пунктуатор"""
+    global VOSK_MODEL_PATH, MODELS_LOADED, LOAD_ERROR, PUNCTUATOR
     
     try:
         print("\n" + "=" * 60)
-        print("🔍 ПРОВЕРЯЮ VOSK МОДЕЛЬ")
+        print("🔍 ЗАГРУЖАЮ МОДЕЛИ")
         print("=" * 60)
         
+        # ===== VOSK =====
         model_path = "/app/vosk_model"
         
         if not os.path.exists(model_path):
@@ -42,12 +44,23 @@ def load_models_background():
             raise Exception(f"Model structure invalid - no 'conf' directory")
         
         print("✓ Структура Vosk модели валидна")
-        
         VOSK_MODEL_PATH = model_path
+        
+        # ===== PUNCTUATOR =====
+        print("⏳ Загружаю модель пунктуации...")
+        try:
+            from deepmultilingualpunctuation import PunctuationModel
+            PUNCTUATOR = PunctuationModel()
+            print("✓ Модель пунктуации загружена")
+        except Exception as e:
+            print(f"⚠️ Пунктуатор не загружен: {e}")
+            print("   Будет использована простая пунктуация")
+            PUNCTUATOR = None
+        
         MODELS_LOADED = True
         
         print("\n" + "=" * 60)
-        print("✅ VOSK МОДЕЛЬ ГОТОВА К ИСПОЛЬЗОВАНИЮ")
+        print("✅ МОДЕЛИ ГОТОВЫ К ИСПОЛЬЗОВАНИЮ")
         print("=" * 60 + "\n")
     
     except Exception as e:
@@ -55,17 +68,29 @@ def load_models_background():
         print(f"\n❌ ОШИБКА: {LOAD_ERROR}\n")
         MODELS_LOADED = False
 
-print("⏳ Проверяю загруженные модели...\n")
+print("⏳ Загружаю модели в фоне...\n")
 model_thread = threading.Thread(target=load_models_background, daemon=True)
 model_thread.start()
 
-def simple_punctuate(text):
-    """Простая капитализация + точка"""
+def smart_punctuate(text):
+    """Умная пунктуация с помощью ML модели"""
+    global PUNCTUATOR
+    
     if not text or not text.strip():
         return text
     
     text = text.strip()
     
+    # Если пунктуатор загружен - используем его
+    if PUNCTUATOR is not None:
+        try:
+            result = PUNCTUATOR.restore_punctuation(text)
+            print(f"   ✓ ML пунктуация: '{result}'")
+            return result
+        except Exception as e:
+            print(f"   ⚠️ ML пунктуация не сработала: {e}")
+    
+    # Fallback: простая пунктуация
     if len(text) > 0:
         text = text[0].upper() + text[1:]
     
@@ -79,9 +104,10 @@ def index():
     """Главная страница"""
     return jsonify({
         "name": "Vosk API - English Speech to Text",
-        "version": "1.1",
+        "version": "2.0",
         "status": "running",
         "models_loaded": MODELS_LOADED,
+        "punctuation": "ML" if PUNCTUATOR else "simple",
         "endpoints": {
             "health": "GET /health",
             "api": "POST /api (с файлом audio в поле '111')"
@@ -96,7 +122,8 @@ def health():
         "app_running": True,
         "models_loaded": MODELS_LOADED,
         "load_error": LOAD_ERROR,
-        "vosk_ready": VOSK_MODEL_PATH is not None
+        "vosk_ready": VOSK_MODEL_PATH is not None,
+        "punctuator_ready": PUNCTUATOR is not None
     }), 200
 
 @app.route('/api', methods=['POST'])
@@ -107,8 +134,7 @@ def process_audio():
     print("🔵 ПОЛУЧЕН ЗАПРОС /api")
     print("=" * 60)
     
-    print(f"📊 Статус моделей: MODELS_LOADED={MODELS_LOADED}")
-    print(f"📊 Vosk: {VOSK_MODEL_PATH is not None}")
+    print(f"📊 Статус: MODELS_LOADED={MODELS_LOADED}, PUNCTUATOR={PUNCTUATOR is not None}")
     
     if not MODELS_LOADED or VOSK_MODEL_PATH is None:
         error_msg = LOAD_ERROR or "Models not loaded"
@@ -139,30 +165,21 @@ def process_audio():
         print(f"📥 Получен файл: {file.filename} ({file_size} bytes)")
         
         # ===== КОНВЕРТИРУЕМ В WAV =====
-        print("🔄 Начинаю конвертацию в WAV 16kHz...")
+        print("🔄 Конвертирую в WAV 16kHz...")
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
             audio_path = tmp.name
         
         try:
-            print(f"   ⏳ Загружаю аудио...")
             song = AudioSegment.from_file(file)
             original_duration = len(song)
             print(f"   ✓ Загружено ({original_duration}ms)")
             
-            print(f"   🔧 Конвертирую в моно + 16kHz...")
             song = song.set_channels(1).set_frame_rate(16000)
-            print(f"   ✓ Конвертировано ({len(song)}ms)")
-            
-            print(f"   💾 Экспортирую в WAV...")
             song.export(audio_path, format="wav")
-            print(f"   ✓ Экспортировано")
-            
-            if not os.path.exists(audio_path):
-                raise Exception(f"WAV file not created at {audio_path}")
             
             file_stat = os.stat(audio_path)
-            print(f"   ✓ Файл существует ({file_stat.st_size} bytes)")
+            print(f"   ✓ Конвертировано ({file_stat.st_size} bytes)")
             
         except Exception as e:
             print(f"   ❌ ОШИБКА КОНВЕРТАЦИИ: {str(e)}")
@@ -171,25 +188,14 @@ def process_audio():
             return jsonify({"error": f"Audio conversion failed: {str(e)}"}), 400
         
         # ===== РАСПОЗНАВАНИЕ РЕЧИ (VOSK) =====
-        print("🎤 Начинаю распознавание речи...")
+        print("🎤 Распознаю речь...")
         
         try:
-            print(f"   ✓ Проверяю модель...")
-            if not os.path.exists(VOSK_MODEL_PATH):
-                raise Exception(f"Model path not found: {VOSK_MODEL_PATH}")
-            print(f"   ✓ Путь к модели существует")
-            
-            print(f"   ⏳ Инициализирую Vosk...")
             SetLogLevel(-1)
             model = Model(VOSK_MODEL_PATH)
-            print(f"   ✓ Модель загружена")
-            
-            print(f"   ⏳ Создаю KaldiRecognizer...")
             recognizer = KaldiRecognizer(model, 16000)
             recognizer.SetWords(True)
-            print(f"   ✓ Recognizer готов")
             
-            print(f"   ⏳ Читаю WAV файл...")
             bytes_read = 0
             with open(audio_path, "rb") as audio_file:
                 while True:
@@ -198,26 +204,18 @@ def process_audio():
                         break
                     recognizer.AcceptWaveform(data)
                     bytes_read += len(data)
-            print(f"   ✓ Прочитано {bytes_read} байт")
             
-            print(f"   ⏳ Получаю финальный результат...")
             result_json = recognizer.FinalResult()
-            print(f"   ✓ JSON получен")
-            
             result_data = json.loads(result_json)
-            print(f"   📋 Raw JSON: {result_data}")
+            print(f"   📋 Raw: {result_data}")
             
-            # ✅ ИСПРАВЛЕНО: Vosk уже даёт готовый text
             text = result_data.get("text", "")
-            
-            print(f"   📝 Распознанный текст: '{text}'")
+            print(f"   📝 Распознано: '{text}'")
             
             if not text or not text.strip():
                 print("   ⚠️ Речь не распознана")
                 print("=" * 60 + "\n")
                 return jsonify({"error": "No speech detected in audio"}), 400
-            
-            print(f"   ✓ Распознано")
             
         except Exception as e:
             print(f"   ❌ ОШИБКА STT: {str(e)}")
@@ -225,22 +223,19 @@ def process_audio():
             print("=" * 60 + "\n")
             return jsonify({"error": f"Speech recognition error: {str(e)}"}), 500
         finally:
-            print(f"   🧹 Удаляю временный файл...")
             if os.path.exists(audio_path):
                 try:
                     os.unlink(audio_path)
-                    print(f"   ✓ Файл удален")
-                except Exception as e:
-                    print(f"   ⚠️ Не удалось удалить: {e}")
+                except:
+                    pass
         
         # ===== ДОБАВЛЯЕМ ПУНКТУАЦИЮ =====
         print("✏️  Добавляю пунктуацию...")
         try:
-            final_text = simple_punctuate(text)
-            print(f"   ✓ Пунктуация добавлена")
-            print(f"✅ ФИНАЛЬНЫЙ РЕЗУЛЬТАТ: '{final_text}'")
+            final_text = smart_punctuate(text)
+            print(f"✅ РЕЗУЛЬТАТ: '{final_text}'")
         except Exception as e:
-            print(f"   ❌ Ошибка пунктуации: {e}")
+            print(f"   ❌ Ошибка: {e}")
             final_text = text
         
         print("=" * 60 + "\n")
@@ -248,6 +243,7 @@ def process_audio():
         return jsonify({
             "text": final_text,
             "raw_text": text,
+            "punctuation": "ML" if PUNCTUATOR else "simple",
             "status": "success"
         }), 200
     
@@ -271,10 +267,7 @@ if __name__ == '__main__':
     print("\n" + "=" * 60)
     print("🌐 ЗАПУСКАЮ FLASK")
     print("=" * 60)
-    print("📡 Слушаю на http://0.0.0.0:5000")
-    print("🔗 Главная: GET /")
-    print("🔗 Здоровье: GET /health")
-    print("📤 API: POST /api")
+    print("📡 http://0.0.0.0:5000")
     print("=" * 60 + "\n")
     
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
