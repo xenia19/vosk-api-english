@@ -29,7 +29,7 @@ def load_models_background():
         print("🔍 ПРОВЕРЯЮ VOSK МОДЕЛЬ")
         print("=" * 60)
         
-        model_path = "/tmp/vosk_model"
+        model_path = "/app/vosk_model"
         
         # Проверяем что модель Vosk существует
         if not os.path.exists(model_path):
