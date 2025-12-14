@@ -30,7 +30,6 @@ def load_models_background():
         
         model_path = "/app/vosk_model"
         
-        # Проверяем что модель Vosk существует
         if not os.path.exists(model_path):
             raise Exception(f"Model directory not found at {model_path}")
         
@@ -45,7 +44,6 @@ def load_models_background():
         print("✓ Структура Vosk модели валидна")
         
         VOSK_MODEL_PATH = model_path
-        
         MODELS_LOADED = True
         
         print("\n" + "=" * 60)
@@ -57,7 +55,6 @@ def load_models_background():
         print(f"\n❌ ОШИБКА: {LOAD_ERROR}\n")
         MODELS_LOADED = False
 
-# Запускаем проверку моделей в отдельном потоке
 print("⏳ Проверяю загруженные модели...\n")
 model_thread = threading.Thread(target=load_models_background, daemon=True)
 model_thread.start()
@@ -82,7 +79,7 @@ def index():
     """Главная страница"""
     return jsonify({
         "name": "Vosk API - English Speech to Text",
-        "version": "1.0",
+        "version": "1.1",
         "status": "running",
         "models_loaded": MODELS_LOADED,
         "endpoints": {
@@ -210,11 +207,8 @@ def process_audio():
             result_data = json.loads(result_json)
             print(f"   📋 Raw JSON: {result_data}")
             
-            # ИСПРАВЛЕННОЕ ПАРСИНГ РЕЗУЛЬТАТА
-            if "result" in result_data and result_data["result"]:
-                text = " ".join([item.get("result", "") for item in result_data["result"]])
-            else:
-                text = result_data.get("text", "")
+            # ✅ ИСПРАВЛЕНО: Vosk уже даёт готовый text
+            text = result_data.get("text", "")
             
             print(f"   📝 Распознанный текст: '{text}'")
             
