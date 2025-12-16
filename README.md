@@ -18,8 +18,6 @@ The API was created as a backend service for the **Voice Journal** mobile app.
 * 🎧 English speech recognition (WAV audio)
 * ✍️ Automatic punctuation and capitalization
 * ⚡ Simple REST API (`POST /api`)
-* 🐳 Dockerized and cloud-deployed
-* 🆓 Free to use (within hosting limits)
 
 ---
 
@@ -27,7 +25,6 @@ The API was created as a backend service for the **Voice Journal** mobile app.
 
 * **Python / Flask** — Backend API
 * **Vosk (Kaldi)** — Speech recognition
-* **SbertPuncCase** — Punctuation & casing
 * **Docker** — Containerization
 * **Render.com** — Deployment
 
